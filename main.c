@@ -28,6 +28,8 @@ print_help()
     printf("\tgain-definition - Read all available gain definition values.\n");
     printf("\tedid            - Read the monitor edid.\n");
     printf("\tdebug           - Put the monitor into 'debug' mode.\n");
+    printf("\tget-brightness  - Read current brightness (0-200).\n");
+    printf("\tset-brightness  - Set brightness (0-200). Usage: set-brightness <value> [monitor]\n");
     printf("\thelp            - Show this help message.\n");
 }
 
@@ -109,6 +111,59 @@ main(int argc, const char *argv[])
         return EXIT_SUCCESS;
     }
 
+    /* set-brightness has its own argv layout:
+     *   argv[1] = "set-brightness"
+     *   argv[2] = brightness value (0-200)
+     *   argv[3] = monitor index (optional, default 0)
+     * so we handle it before the generic argv[2]=monitor parsing below. */
+    if (strcmp(argv[1], "set-brightness") == 0) {
+        if (!argv[2]) {
+            fprintf(stderr, "Usage: %s set-brightness <0-200> [monitor]\n", argv[0]);
+            return EXIT_FAILURE;
+        }
+        char *bend = nullptr;
+        long bval = strtol(argv[2], &bend, 10);
+        if (*bend != '\0' || bval < 0 || bval > 200) {
+            fprintf(stderr, "Brightness must be an integer 0-200\n");
+            return EXIT_FAILURE;
+        }
+
+        int mon = 0;
+        if (argv[3]) {
+            char *mend = nullptr;
+            unsigned long mu = strtoul(argv[3], &mend, 10);
+            if (*mend != '\0' || mu > INT_MAX) {
+                fprintf(stderr, "Invalid value for 'monitor'\n");
+                return EXIT_FAILURE;
+            }
+            mon = (int)mu;
+        }
+
+        [[gnu::cleanup(sd_device_unrefp)]]
+        sd_device *bdevice = enumerate(mon);
+        if (!bdevice) {
+            fprintf(stderr, "Device not found.\n");
+            return EXIT_FAILURE;
+        }
+        const int bfd = sd_device_open(bdevice, 0);
+        if (bfd < 0) {
+            fprintf(stderr, "Failed to open device. %s\n", strerror(-bfd));
+            return EXIT_FAILURE;
+        }
+        eizo_handle_t bhandle = nullptr;
+        enum eizo_result bres = eizo_new(bfd, &bhandle);
+        if (bres < EIZO_SUCCESS || !bhandle) {
+            return EXIT_FAILURE;
+        }
+        bres = eizo_set_brightness(bhandle, (int)bval);
+        if (bres < EIZO_SUCCESS) {
+            fprintf(stderr, "Failed to set brightness: %d\n", bres);
+        }
+        eizo_close(bhandle);
+        return (bres >= EIZO_SUCCESS) ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+
+    /* For all other commands, argv[2] is the optional monitor index */
     int i = 0;
     if (argv[2]) {
         char *end = nullptr;
@@ -163,6 +218,14 @@ main(int argc, const char *argv[])
         eizo_set_osd_indicator(handle, EIZO_OSD_INDICATOR_VISIBLE);
         sleep(5);
         eizo_set_osd_indicator(handle, EIZO_OSD_INDICATOR_HIDDEN);
+    } else if (strcmp(argv[1], "get-brightness") == 0) {
+        int val = 0;
+        enum eizo_result r = eizo_get_brightness(handle, &val);
+        if (r >= EIZO_SUCCESS) {
+            printf("%d\n", val);
+        } else {
+            fprintf(stderr, "Failed to get brightness: %d\n", r);
+        }
     } else {
         fprintf(stderr, "Unknown option \"%s\"\n", argv[1]);
     }
@@ -170,4 +233,3 @@ main(int argc, const char *argv[])
     eizo_close(handle);
     return EXIT_SUCCESS;
 }
-
